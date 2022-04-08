@@ -15,3 +15,7 @@ source .cargo/env
 
 echo "set nighty"
 rustup override set nightly
+
+echo "install deps"
+apt-get install pkg-config -y
+apt-get install libssl-dev -y
