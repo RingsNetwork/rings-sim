@@ -6,3 +6,5 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+bns-node = {git="https://github.com/BNSnet/bns-node.git"}
+netsim-embed = {git="https://github.com/BNSnet/netsim-embed.git"}
