@@ -1,14 +1,12 @@
 use async_process::Command;
 use netsim_embed::Ipv4Range;
 use netsim_embed::Netsim;
-use netsim_embed::*;
+use netsim_embed::run;
 use netsim_embed_machine::Namespace;
 
 #[test]
 fn test_nat() {
-
     run(async {
-        env_logger::init();
         let mut netsim = Netsim::<String, String>::new();
         let net1 = netsim.spawn_network(Ipv4Range::global());
         let mut server = Command::new("ncat");
@@ -19,15 +17,15 @@ fn test_nat() {
         let server_addr = netsim.machine(server).addr();
         println!("Server Addr {}:4242", server_addr.to_string());
 
-        let _ns = Namespace::current().unwrap();
+        let _ns = Namespace::current().expect("failed to get current namespace");
         let ns_server = netsim.machine(server).namespace();
         println!("{}", ns_server);
-        netsim.machine(server).namespace().enter().unwrap();
+        netsim.machine(server).namespace().enter().expect("failed to enter");
 
         let mut cmd = Command::new("nc");
         cmd.args(&[&*server_addr.to_string(), "4242"]);
-        let output = cmd.output().await.unwrap();
+        let output = cmd.output().await.expect("failed on await output");
         println!("response: {}", std::str::from_utf8(&output.stdout).unwrap());
-        //println!("error: {}", std::str::from_utf8(&output.stderr).unwrap());
-    });
+
+    })
 }
