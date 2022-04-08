@@ -1,2 +1,3 @@
 .vagrant
 ./sim/target/*
+./sim/cargo.lock
