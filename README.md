@@ -8,6 +8,7 @@ https://bnsnet.github.io/netsim-embed/
 * Setup:
 
 ```
+git submodule update --init --recursive
 vagrant up --provider=parallels
 ```
 
