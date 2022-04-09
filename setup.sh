@@ -11,7 +11,7 @@ modprobe tun
 
 echo "config rustup and cargo"
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source .cargo/env
+source {$HOME}/.cargo/env
 
 echo "set nighty"
 rustup override set nightly
