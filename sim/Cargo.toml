@@ -8,11 +8,12 @@ edition = "2021"
 [dependencies]
 tokio = { version = "1.13.0", features = ["full"] }
 async-process = "1.0.2"
+log = "0.4.16"
 env_logger = "0.8.3"
-bns-node = {git="https://github.com/BNSnet/bns-node.git"}
-bns-core = {git="https://github.com/BNSnet/bns-node.git"}
-netsim-embed = {git="https://github.com/BNSnet/netsim-embed.git"}
-netsim-embed-core = { version = "0.4.2", git="https://github.com/BNSnet/netsim-embed.git"}
-netsim-embed-machine = { version = "0.6.1", git="https://github.com/BNSnet/netsim-embed.git"}
-netsim-embed-nat = { version = "0.4.1", git="https://github.com/BNSnet/netsim-embed.git"}
-netsim-embed-router = { version = "0.4.5", git="https://github.com/BNSnet/netsim-embed.git"}
+bns-node = { git = "https://github.com/BNSnet/bns-node.git" }
+bns-core = { git = "https://github.com/BNSnet/bns-node.git" }
+netsim-embed = { git = "https://github.com/BNSnet/netsim-embed.git" }
+netsim-embed-core = { version = "0.4.2", git = "https://github.com/BNSnet/netsim-embed.git" }
+netsim-embed-machine = { version = "0.6.1", git = "https://github.com/BNSnet/netsim-embed.git" }
+netsim-embed-nat = { version = "0.4.1", git = "https://github.com/BNSnet/netsim-embed.git" }
+netsim-embed-router = { version = "0.4.5", git = "https://github.com/BNSnet/netsim-embed.git" }

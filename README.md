@@ -7,12 +7,12 @@ https://bnsnet.github.io/netsim-embed/
 
 * Setup:
 
-```
+```shell
 git submodule update --init --recursive
 vagrant up --provider=parallels
 ```
 
-* Build:
-```
-vagrant ssh -c "cargo build --manifest-path sim/Cargo.toml"
+* Run test:
+```shell
+vagrant ssh -c "cd sim && RUST_LOG=info cargo run"
 ```
