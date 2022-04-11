@@ -1,6 +1,5 @@
 pub mod cmd;
 
-use async_process::Command;
 use netsim_embed::Ipv4Range;
 use netsim_embed::MachineId;
 use netsim_embed::NatConfig;

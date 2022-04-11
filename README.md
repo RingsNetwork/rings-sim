@@ -14,5 +14,5 @@ vagrant up --provider=parallels
 
 * Run test:
 ```shell
-vagrant ssh -c "cd sim && RUST_LOG=info cargo run"
+vagrant ssh -c "cd sim && RUST_LOG=info cargo test -- --test-threads=1"
 ```
