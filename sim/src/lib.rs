@@ -1,36 +1,36 @@
 pub mod cmd;
 
-use async_process::Command;
+use futures::lock::Mutex as AsyncMutex;
 use netsim_embed::Ipv4Range;
 use netsim_embed::MachineId;
 use netsim_embed::NatConfig;
 use netsim_embed::Netsim;
 use netsim_embed::NetworkId;
-use netsim_embed_machine::Machine;
 use netsim_embed_machine::Namespace;
+use std::fmt::Debug;
 use std::net::Ipv4Addr;
 use std::str::FromStr;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 pub struct Simulator {
-    driver: Netsim<String, String>,
+    driver: Arc<AsyncMutex<Netsim<String, String>>>,
     next_port_flag: Mutex<u16>,
 }
 
-pub struct Node<'a> {
-    machine: &'a Machine<String, String>,
+pub struct Node {
+    driver: Arc<AsyncMutex<Netsim<String, String>>>,
+    machine_id: MachineId,
 
     pub lnet_id: Option<NetworkId>,
     pub gnet_id: Option<NetworkId>,
 
-    pub machine_id: MachineId,
     pub port: u16,
 }
 
 impl Simulator {
     pub fn new() -> Self {
         Self {
-            driver: Netsim::<String, String>::new(),
+            driver: Arc::new(AsyncMutex::new(Netsim::new())),
             next_port_flag: Mutex::new(50000),
         }
     }
@@ -41,21 +41,23 @@ impl Simulator {
         *port
     }
 
-    pub async fn spawn_global_node<'a>(&'a mut self) -> Node<'a> {
+    pub async fn spawn_global_node(&self) -> Node {
+        let mut driver = self.driver.lock().await;
+
         let port = self.next_port();
         let address = Ipv4Addr::from_str("0.0.0.0").unwrap();
 
-        let node = cmd::build_spawn_node_cmd(&address, port);
-        let machine_id = self.driver.spawn_machine(node, None).await;
+        let node_cmd = cmd::build_spawn_node_cmd(&address, port);
+        let machine_id = driver.spawn_machine(node_cmd, None).await;
 
         // setup network with global ip
-        let net = self.driver.spawn_network(Ipv4Range::global());
+        let net = driver.spawn_network(Ipv4Range::global());
 
         // add machine to net
-        self.driver.plug(machine_id, net, None).await;
+        driver.plug(machine_id, net, None).await;
 
         Node {
-            machine: self.driver.machine(machine_id),
+            driver: self.driver.clone(),
             gnet_id: Some(net),
             lnet_id: None,
             machine_id,
@@ -63,26 +65,28 @@ impl Simulator {
         }
     }
 
-    pub async fn spawn_nat_node<'a>(&'a mut self) -> Node<'a> {
+    pub async fn spawn_nat_node(&self) -> Node {
+        let mut driver = self.driver.lock().await;
+
         let port = self.next_port();
         let address = Ipv4Addr::from_str("0.0.0.0").unwrap();
 
-        let node = cmd::build_spawn_node_cmd(&address, port);
-        let machine_id = self.driver.spawn_machine(node, None).await;
+        let node_cmd = cmd::build_spawn_node_cmd(&address, port);
+        let machine_id = driver.spawn_machine(node_cmd, None).await;
 
         // setup network with global ip
-        let gnet_id = self.driver.spawn_network(Ipv4Range::global());
+        let gnet_id = driver.spawn_network(Ipv4Range::global());
 
         // setup network with local ip
-        let lnet_id = self.driver.spawn_network(Ipv4Range::random_local_subnet());
+        let lnet_id = driver.spawn_network(Ipv4Range::random_local_subnet());
 
         // add machine to net
         let nat_config = NatConfig::default();
-        self.driver.plug(machine_id, lnet_id, None).await;
-        self.driver.add_nat_route(nat_config, gnet_id, lnet_id);
+        driver.plug(machine_id, lnet_id, None).await;
+        driver.add_nat_route(nat_config, gnet_id, lnet_id);
 
         Node {
-            machine: self.driver.machine(machine_id),
+            driver: self.driver.clone(),
             gnet_id: Some(gnet_id),
             lnet_id: Some(lnet_id),
             machine_id,
@@ -91,12 +95,20 @@ impl Simulator {
     }
 }
 
-impl<'a> Node<'a> {
-    pub fn address(&self) -> Ipv4Addr {
-        self.machine.addr()
+impl Node {
+    pub async fn address(&self) -> Ipv4Addr {
+        let mut driver = self.driver.lock().await;
+        driver.machine(self.machine_id).addr()
     }
 
-    pub fn namespace(&self) -> Namespace {
-        self.machine.namespace()
+    pub async fn namespace(&self) -> Namespace {
+        let mut driver = self.driver.lock().await;
+        driver.machine(self.machine_id).namespace()
+    }
+}
+
+impl Debug for Node {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Node(machine_id={:?})", self.machine_id)
     }
 }
