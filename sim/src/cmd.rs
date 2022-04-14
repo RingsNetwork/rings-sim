@@ -3,7 +3,7 @@ use bns_core::ecc::SecretKey;
 use log::info;
 use std::net::Ipv4Addr;
 
-pub fn build_spawn_node_cmd(address: &Ipv4Addr, port: u16) -> Command {
+pub fn build_spawn_node_cmd() -> Command {
     let key = SecretKey::random();
 
     let mut cmd = Command::new("cargo");
@@ -16,13 +16,13 @@ pub fn build_spawn_node_cmd(address: &Ipv4Addr, port: u16) -> Command {
         "-k",
         &key.to_string(),
         "-b",
-        &format!("{}:{}", address.to_string(), port),
+        &format!("0.0.0.0:50000"),
     ]);
 
     cmd
 }
 
-pub async fn ifconfig() {
+pub async fn ifconfig() -> Command {
     let mut cmd = Command::new("ifconfig");
 
     info!("runing ifconfig");
@@ -30,9 +30,11 @@ pub async fn ifconfig() {
 
     info!("stdout:\n{}", std::str::from_utf8(&output.stdout).unwrap());
     info!("stderr:\n{}", std::str::from_utf8(&output.stderr).unwrap());
+
+    cmd
 }
 
-pub async fn ping(address: &Ipv4Addr) {
+pub async fn ping(address: &Ipv4Addr) -> Command {
     let mut cmd = Command::new("ping");
     let args = ["-c", "5", &address.to_string()];
     cmd.args(&args);
@@ -42,9 +44,11 @@ pub async fn ping(address: &Ipv4Addr) {
 
     info!("stdout:\n{}", std::str::from_utf8(&output.stdout).unwrap());
     info!("stderr:\n{}", std::str::from_utf8(&output.stderr).unwrap());
+
+    cmd
 }
 
-pub async fn curl_get(address: &Ipv4Addr, port: u16) {
+pub async fn curl_get(address: &Ipv4Addr, port: u16) -> Command {
     let mut cmd = Command::new("curl");
     let args = [
         "-v".to_string(),
@@ -59,4 +63,6 @@ pub async fn curl_get(address: &Ipv4Addr, port: u16) {
 
     info!("stdout:\n{}", std::str::from_utf8(&output.stdout).unwrap());
     info!("stderr:\n{}", std::str::from_utf8(&output.stderr).unwrap());
+
+    cmd
 }

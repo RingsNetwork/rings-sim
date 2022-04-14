@@ -9,106 +9,71 @@ use netsim_embed::NetworkId;
 use netsim_embed_machine::Namespace;
 use std::fmt::Debug;
 use std::net::Ipv4Addr;
-use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub struct Simulator {
     driver: Arc<AsyncMutex<Netsim<String, String>>>,
-    next_port_flag: Mutex<u16>,
 }
 
 pub struct Node {
     driver: Arc<AsyncMutex<Netsim<String, String>>>,
-    machine_id: MachineId,
+    machine: MachineId,
 
-    pub lnet_id: Option<NetworkId>,
-    pub gnet_id: Option<NetworkId>,
-
-    pub port: u16,
+    pub net: NetworkId,
+    pub addr: Ipv4Addr,
 }
 
 impl Simulator {
     pub fn new() -> Self {
         Self {
             driver: Arc::new(AsyncMutex::new(Netsim::new())),
-            next_port_flag: Mutex::new(50000),
         }
     }
 
-    fn next_port(&self) -> u16 {
-        let mut port = self.next_port_flag.lock().unwrap();
-        *port += 1;
-        *port
-    }
-
-    pub async fn spawn_global_node(&self) -> Node {
+    pub async fn spawn_network(&self, range: Option<Ipv4Range>) -> NetworkId {
         let mut driver = self.driver.lock().await;
 
-        let port = self.next_port();
-        let address = Ipv4Addr::from_str("0.0.0.0").unwrap();
+        let range = range.unwrap_or_else(|| Ipv4Range::global().split(2)[0]);
+        let net = driver.spawn_network(range);
 
-        let node_cmd = cmd::build_spawn_node_cmd(&address, port);
-        let machine_id = driver.spawn_machine(node_cmd, None).await;
+        net
+    }
 
-        // setup network with global ip
-        let net = driver.spawn_network(Ipv4Range::global());
+    pub async fn spawn_node(&self, net: NetworkId) -> Node {
+        let mut driver = self.driver.lock().await;
 
-        // add machine to net
-        driver.plug(machine_id, net, None).await;
+        let node_cmd = cmd::build_spawn_node_cmd();
+        let machine = driver.spawn_machine(node_cmd, None).await;
+
+        let addr = driver.network_mut(net).unique_addr();
+        driver.plug(machine, net, Some(addr)).await;
 
         Node {
             driver: self.driver.clone(),
-            gnet_id: Some(net),
-            lnet_id: None,
-            machine_id,
-            port,
-        }
-    }
-
-    pub async fn spawn_nat_node(&self) -> Node {
-        let mut driver = self.driver.lock().await;
-
-        let port = self.next_port();
-        let address = Ipv4Addr::from_str("0.0.0.0").unwrap();
-
-        let node_cmd = cmd::build_spawn_node_cmd(&address, port);
-        let machine_id = driver.spawn_machine(node_cmd, None).await;
-
-        // setup network with global ip
-        let gnet_id = driver.spawn_network(Ipv4Range::global());
-
-        // setup network with local ip
-        let lnet_id = driver.spawn_network(Ipv4Range::random_local_subnet());
-
-        // add machine to net
-        let nat_config = NatConfig::default();
-        driver.plug(machine_id, lnet_id, None).await;
-        driver.add_nat_route(nat_config, gnet_id, lnet_id);
-
-        Node {
-            driver: self.driver.clone(),
-            gnet_id: Some(gnet_id),
-            lnet_id: Some(lnet_id),
-            machine_id,
-            port,
+            machine,
+            net,
+            addr,
         }
     }
 }
 
 impl Node {
-    pub async fn address(&self) -> Ipv4Addr {
-        let mut driver = self.driver.lock().await;
-        driver.machine(self.machine_id).addr()
-    }
-
     pub async fn namespace(&self) -> Namespace {
         let mut driver = self.driver.lock().await;
-        driver.machine(self.machine_id).namespace()
+        driver.machine(self.machine).namespace()
+    }
+
+    pub fn endpoint_url(&self) -> String {
+        format!("http://{}:50000", self.addr)
     }
 }
 
 impl Debug for Node {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Node(machine_id={:?})", self.machine_id)
+        write!(
+            f,
+            "Node(machine_id={:?}, lnet={:?}, laddr={:?})",
+            self.machine, self.net, self.addr,
+        )
     }
 }

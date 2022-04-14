@@ -11,8 +11,9 @@ futures = "0.3.21"
 async-process = "1.0.2"
 log = "0.4.16"
 env_logger = "0.8.3"
-bns-node = { git = "https://github.com/BNSnet/bns-node.git" }
-bns-core = { git = "https://github.com/BNSnet/bns-node.git" }
+anyhow = "1.0.45"
+bns-node = { rev = "d242f4612bff7a2f85ef32ca4d3d3cf92c1470e5", git = "https://github.com/BNSnet/bns-node.git" }
+bns-core = { rev = "d242f4612bff7a2f85ef32ca4d3d3cf92c1470e5", git = "https://github.com/BNSnet/bns-node.git" }
 netsim-embed = { git = "https://github.com/BNSnet/netsim-embed.git" }
 netsim-embed-core = { version = "0.4.2", git = "https://github.com/BNSnet/netsim-embed.git" }
 netsim-embed-machine = { version = "0.6.1", git = "https://github.com/BNSnet/netsim-embed.git" }
