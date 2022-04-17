@@ -1,25 +1,56 @@
 use bns_node::cli::Client;
+use futures::channel::oneshot;
 use log::info;
 use netsim_embed::*;
+use netsim_embed_core::{wire, DelayBuffer};
 use netsim_embed_machine::Namespace;
 use sim::cmd;
 use sim::Node;
 use sim::Simulator;
-use std::thread;
+use std::future::Future;
 use std::time;
 use tokio::runtime::Runtime;
+
+async fn sleep(duration: time::Duration) {
+    info!("sleep {:?}", duration);
+    let mut delay = DelayBuffer::new();
+    delay.set_delay(duration);
+
+    let (mut plug_a, plug_b) = wire();
+    let mut plug_d = delay.spawn(plug_b);
+
+    plug_a.unbounded_send(Vec::from([u8::default()]));
+    plug_d.incoming().await;
+    info!("sleep {:?} done", duration);
+}
 
 async fn wait_ready(nodes: &[&Node]) {
     info!("Waiting for nodes ready {:?}", nodes);
 
-    // TODO: There is no sleep in async_global_executor.
-    // And we also should wait by node info, not just duration.
+    sleep(time::Duration::from_secs(10)).await;
+    sleep(time::Duration::from_secs(10)).await;
+    sleep(time::Duration::from_secs(10)).await;
+    sleep(time::Duration::from_secs(10)).await;
+    sleep(time::Duration::from_secs(10)).await;
+    sleep(time::Duration::from_secs(10)).await;
 
-    thread::sleep(time::Duration::from_secs(20));
+    // TODO: We also should wait by node info, not just duration.
     for n in nodes {
         cmd::ping(&n.addr).await;
         cmd::curl_get(&n.addr, 50000).await;
     }
+}
+
+fn tk_run<T, F>(runtime: &Runtime, future: F) -> oneshot::Receiver<T>
+where
+    F: Future<Output = T> + Send + 'static,
+    T: std::fmt::Debug + Send + 'static,
+{
+    let (tx, rx) = oneshot::channel::<T>();
+    runtime.spawn(async {
+        tx.send(future.await).unwrap();
+    });
+    rx
 }
 
 async fn test_spawn_node() -> anyhow::Result<()> {
@@ -51,6 +82,7 @@ async fn test_handshake() -> anyhow::Result<()> {
     let net = sim.spawn_network(None).await;
 
     let node1 = sim.spawn_node(net).await;
+    let node1_url = node1.endpoint_url();
     info!("Node1 listen {}", node1.endpoint_url());
 
     let node2 = sim.spawn_node(net).await;
@@ -64,8 +96,23 @@ async fn test_handshake() -> anyhow::Result<()> {
 
     wait_ready(&[&node1, &node2, &node3]).await;
 
-    let mut node1_cli = tkrt.block_on(Client::new(&node1.endpoint_url()))?;
+    let rx = tk_run(&tkrt, async move {
+        info!("Connect to node1");
+        let mut cli = Client::new(&node1.endpoint_url()).await?;
 
+        info!("Node1 connect None2 via http: {}", node2.endpoint_url());
+        let node2_transport_id = cli
+            .connect_peer_via_http(&node2.endpoint_url())
+            .await?
+            .result;
+
+        anyhow::Ok::<String>(node2_transport_id)
+    });
+
+    let node2_transport_id = rx.await??;
+    info!("Node2 connected id: {}", node2_transport_id);
+
+    /*
     info!("Node1 connect None2 via http: {}", node2.endpoint_url());
     let node2_transport_id = tkrt
         .block_on(node1_cli.connect_peer_via_http(&node2.endpoint_url()))?
@@ -78,6 +125,7 @@ async fn test_handshake() -> anyhow::Result<()> {
 
     let peers = tkrt.block_on(node1_cli.list_peers(true))?.result;
     info!("Node1 list all peers: {:?}", peers);
+    */
 
     Ok(())
 }
@@ -85,9 +133,7 @@ async fn test_handshake() -> anyhow::Result<()> {
 fn main() {
     env_logger::init();
 
-    run(async {
-        test_spawn_node().await.unwrap();
-    });
+    // run(async { test_spawn_node().await.unwrap(); });
     run(async {
         test_handshake().await.unwrap();
     });
