@@ -1,6 +1,7 @@
 pub mod cmd;
 
 use futures::lock::Mutex as AsyncMutex;
+use log::info;
 use netsim_embed::Ipv4Range;
 use netsim_embed::MachineId;
 use netsim_embed::NatConfig;
@@ -10,6 +11,7 @@ use netsim_embed_machine::Namespace;
 use std::fmt::Debug;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
+use tokio::runtime::Runtime as TokioRuntime;
 
 pub struct Simulator {
     driver: Arc<AsyncMutex<Netsim<String, String>>>,
@@ -58,9 +60,15 @@ impl Simulator {
 }
 
 impl Node {
-    pub async fn namespace(&self) -> Namespace {
+    pub async fn enter_namespace(&self) -> anyhow::Result<(Namespace, TokioRuntime)> {
         let mut driver = self.driver.lock().await;
-        driver.machine(self.machine).namespace()
+        let ns = driver.machine(self.machine).namespace();
+
+        info!("Enter {:?} namespace {}", self, ns);
+        ns.enter()?;
+        let tkrt = TokioRuntime::new()?;
+
+        Ok((ns, tkrt))
     }
 
     pub fn endpoint_url(&self) -> String {

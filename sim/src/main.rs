@@ -9,7 +9,7 @@ use sim::Node;
 use sim::Simulator;
 use std::future::Future;
 use std::time;
-use tokio::runtime::Runtime;
+use tokio::runtime::Runtime as TokioRuntime;
 
 async fn sleep(duration: time::Duration) {
     info!("sleep {:?}", duration);
@@ -24,7 +24,7 @@ async fn sleep(duration: time::Duration) {
     info!("sleep {:?} done", duration);
 }
 
-async fn wait_ready(nodes: &[&Node]) {
+async fn wait_ready(nodes: &[&Node], check: bool) {
     info!("Waiting for nodes ready {:?}", nodes);
 
     sleep(time::Duration::from_secs(10)).await;
@@ -35,13 +35,15 @@ async fn wait_ready(nodes: &[&Node]) {
     sleep(time::Duration::from_secs(10)).await;
 
     // TODO: We also should wait by node info, not just duration.
-    for n in nodes {
-        cmd::ping(&n.addr).await;
-        cmd::curl_get(&n.addr, 50000).await;
+    if check {
+        for n in nodes {
+            cmd::ping(&n.addr).await;
+            cmd::curl_get(&n.addr, 50000).await;
+        }
     }
 }
 
-fn tk_run<T, F>(runtime: &Runtime, future: F) -> oneshot::Receiver<T>
+fn tk_run<T, F>(runtime: &TokioRuntime, future: F) -> oneshot::Receiver<T>
 where
     F: Future<Output = T> + Send + 'static,
     T: std::fmt::Debug + Send + 'static,
@@ -66,18 +68,15 @@ async fn test_spawn_node() -> anyhow::Result<()> {
     info!("Current namespace {}", Namespace::current()?);
     cmd::ifconfig().await;
 
-    let node1_ns = node1.namespace().await;
-    info!("Enter node1 namespace {}", node1_ns);
-    node1_ns.enter()?;
+    node1.enter_namespace().await?;
     cmd::ifconfig().await;
 
-    wait_ready(&[&node1, &node2]).await;
+    wait_ready(&[&node1, &node2], true).await;
 
     Ok(())
 }
 
 async fn test_handshake() -> anyhow::Result<()> {
-    let tkrt = Runtime::new().unwrap();
     let sim = Simulator::new();
     let net = sim.spawn_network(None).await;
 
@@ -91,14 +90,14 @@ async fn test_handshake() -> anyhow::Result<()> {
     let node3 = sim.spawn_node(net).await;
     info!("Node3 listen {}", node3.endpoint_url());
 
-    info!("Enter node1 namespace");
-    node1.namespace().await.enter()?;
+    let (_, tkrt) = node1.enter_namespace().await?;
 
-    wait_ready(&[&node1, &node2, &node3]).await;
+    wait_ready(&[&node1, &node2, &node3], false).await;
 
+    let node1_url = node1.endpoint_url();
     let rx = tk_run(&tkrt, async move {
         info!("Connect to node1");
-        let mut cli = Client::new(&node1.endpoint_url()).await?;
+        let mut cli = Client::new(&node1_url).await?;
 
         info!("Node1 connect None2 via http: {}", node2.endpoint_url());
         let node2_transport_id = cli
@@ -110,22 +109,15 @@ async fn test_handshake() -> anyhow::Result<()> {
     });
 
     let node2_transport_id = rx.await??;
-    info!("Node2 connected id: {}", node2_transport_id);
+    info!("Node2 transport id: {}", node2_transport_id);
 
-    /*
-    info!("Node1 connect None2 via http: {}", node2.endpoint_url());
-    let node2_transport_id = tkrt
-        .block_on(node1_cli.connect_peer_via_http(&node2.endpoint_url()))?
-        .result;
-
-    info!("Node1 connect None3 via http: {}", node3.endpoint_url());
-    let node3_transport_id = tkrt
-        .block_on(node1_cli.connect_peer_via_http(&node3.endpoint_url()))?
-        .result;
-
-    let peers = tkrt.block_on(node1_cli.list_peers(true))?.result;
-    info!("Node1 list all peers: {:?}", peers);
-    */
+    let node1_url = node1.endpoint_url();
+    let rx = tk_run(&tkrt, async move {
+        let mut cli = Client::new(&node1_url).await?;
+        let peers = cli.list_peers(true).await?.display();
+        anyhow::Ok::<()>(())
+    });
+    let peers = rx.await?;
 
     Ok(())
 }
