@@ -2,6 +2,7 @@ import argparse
 import logging
 import pathlib
 import uuid
+import random
 
 GET_IFNAME_CMD = "bash -c \"ip -br link | awk '$3 ~ /'{mac}'/ {{print $1}}'\""
 ADD_NAT_RULE_CMD = "iptables-legacy -t nat -A POSTROUTING -s {lan_subnet} -o {wan_ifname} -j SNAT --to-source {wan_ip}"
@@ -48,7 +49,7 @@ def parse_args():
     create_nat.add_argument(
         "--router-image",
         type=str,
-        default="bns/router",
+        default="bnsnet/router",
         help="Image for router container",
     )
     create_nat.add_argument(
@@ -89,7 +90,7 @@ def parse_args():
     create_node.add_argument(
         "--node-image",
         type=str,
-        default="bns/node",
+        default="bnsnet/node",
         help="Image for node container",
     )
     create_node.add_argument(
@@ -98,8 +99,21 @@ def parse_args():
         type=str,
         help="Name for node container",
     )
+    create_node.add_argument(
+        "-s",
+        "--stun",
+        type=str,
+        required=True,
+        help="STUN server url",
+    )
+    create_node.add_argument(
+        "-k",
+        "--key",
+        type=str,
+        help="ETH key",
+    )
 
-    clean = subparsers.add_parser("clean", help="Clean up all containers and networks")
+    subparsers.add_parser("clean", help="Clean up all containers and networks")
 
     return parser.parse_args()
 
@@ -126,11 +140,11 @@ def exec_run(container, cmd):
 def build_image(client, args):
     p = str(args.path / "bns-router")
     logger.info(f"Building image, path: {p}")
-    client.images.build(path=p, tag="bns/router", rm=True)
+    client.images.build(path=p, tag="bnsnet/router", rm=True)
 
     p = str(args.path / "bns-node")
     logger.info(f"Building image, path: {p}")
-    client.images.build(path=p, tag="bns/node", rm=True)
+    client.images.build(path=p, dockerfile="../Dockerfile", tag="bnsnet/node", rm=True)
 
 
 def create_nat(client, args):
@@ -205,13 +219,23 @@ def create_node(client, args):
     if args.name is None:
         args.name = f"bns-node-{nonce()}"
 
+    if args.key is None:
+        args.key = "".join([uuid.uuid4().hex + uuid.uuid4().hex])
+
+    if ":" not in args.stun:
+        args.stun = f"{args.stun}:3478"
+    if not args.stun.startswith("stun://"):
+        args.stun = f"stun://{args.stun}"
+
     node = client.containers.run(
         args.node_image,
+        "cargo run -- run -b 0.0.0.0:50000",
         name=args.name,
         detach=True,
         cap_add=["NET_ADMIN"],
         network=lan_nw.id,
         labels={"operator": "nind"},
+        environment={"ICE_SERVERS": args.stun, "ETH_KEY": args.key},
     )
     node.reload()
     node_ip = node.attrs["NetworkSettings"]["Networks"][lan_nw.name]["IPAddress"]
