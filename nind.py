@@ -2,12 +2,14 @@ import argparse
 import logging
 import pathlib
 import uuid
-import random
-
-GET_IFNAME_CMD = "bash -c \"ip -br link | awk '$3 ~ /'{mac}'/ {{print $1}}'\""
-ADD_NAT_RULE_CMD = "iptables-legacy -t nat -A POSTROUTING -s {lan_subnet} -o {wan_ifname} -j SNAT --to-source {wan_ip}"
 
 logger = logging.getLogger("nind")
+
+try:
+    from python_on_whales import docker
+except ImportError:
+    logger.error("Please install python-on-whales")
+    exit(1)
 
 
 def init_logger(level):
@@ -123,61 +125,52 @@ def nonce():
 
 
 def get_mac_ifname(container, mac):
-    cmd = GET_IFNAME_CMD.format(mac=mac)
-    output = exec_run(container, cmd)
+    cmd = "ip -br link | awk '$3 ~ /'{mac}'/ {{print $1}}'".format(mac=mac)
+    output = container.execute(["bash", "-c", cmd])
     return output.split("@")[0]
 
 
-def exec_run(container, cmd):
-    output = container.exec_run(cmd).output.decode()
-
-    logger.debug(f"exec cmd: {cmd}")
-    logger.debug(f"cmd output: {output or '[NoOutput]'}")
-
-    return output
-
-
-def build_image(client, args):
-    p = str(args.path / "bns-router")
+def build_image(args):
+    p = args.path / "bns-router"
     logger.info(f"Building image, path: {p}")
-    client.images.build(path=p, tag="bnsnet/router", rm=True)
+    docker.build(context_path=p, tags=["bnsnet/router"], load=True)
 
-    p = str(args.path / "bns-node")
+    p = args.path
     logger.info(f"Building image, path: {p}")
-    client.images.build(path=p, dockerfile="../Dockerfile", tag="bnsnet/node", rm=True)
+    docker.build(context_path=p, tags=["bnsnet/node"], load=True)
 
 
-def create_nat(client, args):
-    wan_nw = client.networks.list(names=[args.wan])[0]
+def create_nat(args):
+    wan_nw = docker.network.list(filters={"name": args.wan})[0]
 
     if args.lan is None:
-        lan_nw = client.networks.create(
+        lan_nw = docker.network.create(
             f"bns-nw-{nonce()}",
             labels={"operator": "nind"},
         )
     else:
-        lan_nw = client.networks.list(names=[args.lan])[0]
+        lan_nw = docker.network.list(names=[args.lan])[0]
 
     if args.name is None:
         args.name = f"bns-router-{nonce()}"
 
-    router = client.containers.create(
+    router = docker.container.create(
         args.router_image,
         name=args.name,
         cap_add=["NET_ADMIN"],
-        network=lan_nw.id,
+        networks=[lan_nw],
         labels={"operator": "nind"},
     )
-    wan_nw.connect(router)
+    docker.network.connect(wan_nw, router)
     router.start()
     router.reload()
 
-    wan_ip = router.attrs["NetworkSettings"]["Networks"][wan_nw.name]["IPAddress"]
-    wan_mac = router.attrs["NetworkSettings"]["Networks"][wan_nw.name]["MacAddress"]
+    wan_ip = router.network_settings.networks[wan_nw.name].ip_address
+    wan_mac = router.network_settings.networks[wan_nw.name].mac_address
     wan_ifname = get_mac_ifname(router, wan_mac)
 
-    lan_ip = router.attrs["NetworkSettings"]["Networks"][lan_nw.name]["IPAddress"]
-    lan_mac = router.attrs["NetworkSettings"]["Networks"][lan_nw.name]["MacAddress"]
+    lan_ip = router.network_settings.networks[lan_nw.name].ip_address
+    lan_mac = router.network_settings.networks[lan_nw.name].mac_address
     lan_ifname = get_mac_ifname(router, lan_mac)
 
     logger.info(f"Router Container ID {router.id}")
@@ -189,31 +182,42 @@ def create_nat(client, args):
     logger.info(f"(lan {lan_nw.name}) Mac Address {lan_mac}")
     logger.info("Configuring iptables...")
 
-    lan_subnet = lan_nw.attrs["IPAM"]["Config"][0]["Subnet"]
-    cmd = ADD_NAT_RULE_CMD.format(
-        lan_subnet=lan_subnet, wan_ifname=wan_ifname, wan_ip=wan_ip
+    lan_subnet = lan_nw.ipam.config[0]["Subnet"]
+    router.execute(
+        [
+            "iptables-legacy",
+            "-t",
+            "nat",
+            "-A",
+            "POSTROUTING",
+            "-s",
+            lan_subnet,
+            "-o",
+            wan_ifname,
+            "-j",
+            "SNAT",
+            "--to-source",
+            wan_ip,
+        ]
     )
-    exec_run(router, cmd)
 
     print(f"-l {lan_nw.name} -r {router.name}")
 
 
-def create_node(client, args):
-    router = client.containers.get(args.router)
-    lan_nw = client.networks.get(args.lan)
+def create_node(args):
+    router = docker.container.list(filters={"name": args.router})[0]
+    lan_nw = docker.network.list(filters={"name": args.lan})[0]
 
     wan_nw_id = next(
-        v["NetworkID"]
-        for v in router.attrs["NetworkSettings"]["Networks"].values()
-        if v["NetworkID"] != lan_nw.id
+        v.network_id
+        for v in router.network_settings.networks.values()
+        if v.network_id != lan_nw.id
     )
-    wan_nw = client.networks.get(wan_nw_id)
-    wan_subnet = wan_nw.attrs["IPAM"]["Config"][0]["Subnet"]
+    wan_nw = docker.network.list(filters={"id": wan_nw_id})[0]
+    wan_subnet = wan_nw.ipam.config[0]["Subnet"]
 
     router_ip = next(
-        v["IPv4Address"]
-        for k, v in lan_nw.attrs["Containers"].items()
-        if k == router.id
+        v.ipv4_address for k, v in lan_nw.containers.items() if k == router.id
     ).split("/")[0]
 
     if args.name is None:
@@ -227,59 +231,46 @@ def create_node(client, args):
     if not args.stun.startswith("stun://"):
         args.stun = f"stun://{args.stun}"
 
-    node = client.containers.run(
+    node = docker.container.run(
         args.node_image,
-        "cargo run -- run -b 0.0.0.0:50000",
+        ["bns-node", "run", "-b", "0.0.0.0:50000"],
         name=args.name,
         detach=True,
         cap_add=["NET_ADMIN"],
-        network=lan_nw.id,
+        networks=[lan_nw],
         labels={"operator": "nind"},
-        environment={"ICE_SERVERS": args.stun, "ETH_KEY": args.key},
+        envs={"ICE_SERVERS": args.stun, "ETH_KEY": args.key},
     )
     node.reload()
-    node_ip = node.attrs["NetworkSettings"]["Networks"][lan_nw.name]["IPAddress"]
+    node_ip = node.network_settings.networks[lan_nw.name].ip_address
 
     logger.info(f"Node Container ID {node.id}")
     logger.info(f"(lan {lan_nw.name}) IP Address {node_ip}")
     logger.info("Add route...")
 
-    cmd = f"ip route add {wan_subnet} via {router_ip} dev eth0"
-    exec_run(node, cmd)
+    node.execute(["ip", "route", "add", wan_subnet, "via", router_ip, "dev", "eth0"])
 
     print(f"{lan_nw.name} {node.name}")
 
 
-def clean(client):
-    for c in client.containers.list(all=True, filters={"label": "operator=nind"}):
+def clean():
+    for c in docker.container.list(all=True, filters={"label": "operator=nind"}):
         c.remove(force=True)
-    client.networks.prune(filters={"label": "operator=nind"})
+    docker.network.prune(filters={"label": "operator=nind"})
 
 
 def main():
     args = parse_args()
     init_logger(logging.DEBUG if args.verbose else logging.INFO)
 
-    try:
-        import docker
-    except ImportError:
-        logger.error("Please install docker-py")
-        exit(1)
-
-    try:
-        client = docker.from_env()
-    except Exception:
-        logger.error("Please run docker daemon")
-        exit(1)
-
     if args.cmd == "build_image":
-        build_image(client, args)
+        build_image(args)
     elif args.cmd == "create_nat":
-        create_nat(client, args)
+        create_nat(args)
     elif args.cmd == "create_node":
-        create_node(client, args)
+        create_node(args)
     elif args.cmd == "clean":
-        clean(client)
+        clean()
 
 
 if __name__ == "__main__":
