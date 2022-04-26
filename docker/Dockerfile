@@ -1,7 +1,9 @@
 # This is a test Dockerfile. Do not use it for production.
 
 # build
-FROM rust AS build
+FROM rust AS builder
+
+RUN apt-get update && apt-get install -y iproute2 iputils-ping && rm -rf /var/lib/apt/lists/*
 
 # This step compiles only our dependencies and saves them in a layer. This is the most impactful time savings
 # Note the use of --mount=type=cache. On subsequent runs, we'll have the crates already downloaded
@@ -25,5 +27,5 @@ RUN --mount=type=cache,target=/local/cargo/registry touch /src/bns-node/bns-core
 # Export bins. Keep image slim
 FROM debian:bullseye-slim AS app
 RUN apt-get update && apt-get install -y iproute2 iputils-ping && rm -rf /var/lib/apt/lists/*
-COPY --from=build /src/bns-node/target/debug/bns-node /bin/bns-node
+COPY --from=builder /src/bns-node/target/debug/bns-node /bin/bns-node
 CMD ["sleep", "infinity"]

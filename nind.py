@@ -4,6 +4,7 @@ import pathlib
 import uuid
 
 logger = logging.getLogger("nind")
+base_dir = pathlib.Path(__file__).parent
 
 try:
     from python_on_whales import docker
@@ -45,6 +46,11 @@ def parse_args():
         type=pathlib.Path,
         default="./docker",
         help="Path to the base directory contained build directories",
+    )
+    build_image.add_argument(
+        "--builder",
+        action="store_true",
+        help="Export builder image for debug mode (it's super huge)",
     )
 
     create_nat = subparsers.add_parser("create_nat", help="Create a NAT")
@@ -114,6 +120,11 @@ def parse_args():
         type=str,
         help="ETH key",
     )
+    create_node.add_argument(
+        "--debug",
+        action="store_true",
+        help="Run with volumed codes, so that you can restart container to update running codes",
+    )
 
     subparsers.add_parser("clean", help="Clean up all containers and networks")
 
@@ -131,6 +142,15 @@ def get_mac_ifname(container, mac):
 
 
 def build_image(args):
+
+    if args.builder:
+        p = args.path
+        logger.info(f"Building image, path: {p}")
+        docker.build(
+            context_path=p, tags=["bnsnet/node-builder"], load=True, target="builder"
+        )
+        return
+
     p = args.path / "bns-router"
     logger.info(f"Building image, path: {p}")
     docker.build(context_path=p, tags=["bnsnet/router"], load=True)
@@ -231,15 +251,25 @@ def create_node(args):
     if not args.stun.startswith("stun://"):
         args.stun = f"stun://{args.stun}"
 
+    cmd = ["bns-node", "run", "-b", "0.0.0.0:50000"]
+    volumes = []
+    if args.debug:
+        cmd = ["cargo", "run", "--", "run", "-b", "0.0.0.0:50000"]
+        # cannot use readonly mode, cargo will manipulate files
+        volumes = [(base_dir / "docker/bns-node", "/src/bns-node")]
+        args.node_image = "bnsnet/node-builder"
+        args.name = f"{args.name}-debug"
+
     node = docker.container.run(
         args.node_image,
-        ["bns-node", "run", "-b", "0.0.0.0:50000"],
+        cmd,
         name=args.name,
         detach=True,
         cap_add=["NET_ADMIN"],
         networks=[lan_nw],
         labels={"operator": "nind"},
-        envs={"ICE_SERVERS": args.stun, "ETH_KEY": args.key},
+        envs={"ICE_SERVERS": args.stun, "ETH_KEY": args.key, "RUST_BACKTRACE": "1"},
+        volumes=volumes,
     )
     node.reload()
     node_ip = node.network_settings.networks[lan_nw.name].ip_address
