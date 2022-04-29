@@ -13,6 +13,7 @@ RUN cargo new --vcs none /src/bns-node && \
     cp /src/bns-node/src/main.rs /src/bns-node/bin/daemon.rs && \
     cargo new --vcs none --lib /src/bns-node/bns-core
 WORKDIR /src/bns-node
+ENV CARGO_TARGET_DIR /src/bns-node/target/docker
 COPY bns-node/Cargo.toml bns-node/Cargo.lock bns-node/rust-toolchain.toml ./
 COPY bns-node/bns-core/Cargo.toml ./bns-core
 RUN --mount=type=cache,target=/local/cargo/registry cargo build --all
@@ -25,8 +26,8 @@ COPY ./bns-node .
 RUN --mount=type=cache,target=/local/cargo/registry touch /src/bns-node/bns-core/lib.rs /src/bns-node/bin/main.rs && \
                                                     cargo clean -p bns-core && \
                                                     cargo build --all && \
-                                                    mv /src/bns-node/target/debug/bns-node . && \
-                                                    rm -rf target
+                                                    mv /src/bns-node/target/docker/debug/bns-node . && \
+                                                    rm -rf target/docker
 
 # Export bins. Keep image slim
 FROM debian:bullseye-slim AS app

@@ -1,0 +1,10 @@
+version: "2"
+syncs:
+  bns-node-native-code-sync:
+    src: './docker/bns-node'
+    sync_strategy: native_osx
+    sync_excludes:
+      - .git
+      - .gitignore
+      - .github
+      - target

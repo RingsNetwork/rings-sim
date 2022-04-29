@@ -1,13 +1,17 @@
 import argparse
 import logging
+import os
 import pathlib
 import uuid
+from typing import cast
 
 logger = logging.getLogger("nind")
 base_dir = pathlib.Path(__file__).parent
 
 try:
     from python_on_whales import docker
+    from python_on_whales.components.container.cli_wrapper import Container
+    from python_on_whales.components.volume.cli_wrapper import VolumeDefinition
 except ImportError:
     logger.error("Please install python-on-whales")
     exit(1)
@@ -111,7 +115,6 @@ def parse_args():
         "-s",
         "--stun",
         type=str,
-        required=True,
         help="STUN server url",
     )
     create_node.add_argument(
@@ -121,9 +124,33 @@ def parse_args():
         help="ETH key",
     )
     create_node.add_argument(
+        "-d",
         "--debug",
         action="store_true",
         help="Run with volumed codes, so that you can restart container to update running codes",
+    )
+    create_node.add_argument(
+        "-p",
+        "--publish",
+        action="append",
+        help="Ports to publish, same as the `-p` argument in the Docker CLI",
+    )
+    create_node.add_argument(
+        "-e",
+        "--env",
+        action="append",
+        help="Environment variable kv pair splited by `=`",
+    )
+    create_node.add_argument(
+        "-c",
+        "--code",
+        default=base_dir / "docker/bns-node",
+        help="Specify code directory or volume to mount for debug mode",
+    )
+    create_node.add_argument(
+        "-m",
+        "--code-mount-mode",
+        help="Specify code mount mode for debug mode like docker `-v` argument in the Docker CLI",
     )
 
     subparsers.add_parser("clean", help="Clean up all containers and networks")
@@ -146,9 +173,8 @@ def build_image(args):
     if args.builder:
         p = args.path
         logger.info(f"Building image, path: {p}")
-        docker.build(
-            context_path=p, tags=["bnsnet/node-builder"], load=True, target="builder"
-        )
+        # Do not use buildx to prevent sending huge tarball. Known issue: https://github.com/docker/buildx/issues/107
+        os.system(f"docker build -t bnsnet/node-builder --target builder {p}")
         return
 
     p = args.path / "bns-router"
@@ -169,7 +195,7 @@ def create_nat(args):
             labels={"operator": "nind"},
         )
     else:
-        lan_nw = docker.network.list(names=[args.lan])[0]
+        lan_nw = docker.network.list(filters={"name": args.lan})[0]
 
     if args.name is None:
         args.name = f"bns-router-{nonce()}"
@@ -225,8 +251,15 @@ def create_nat(args):
 
 
 def create_node(args):
-    router = docker.container.list(filters={"name": args.router})[0]
-    lan_nw = docker.network.list(filters={"name": args.lan})[0]
+    router = next(iter(docker.container.list(filters={"name": args.router})), None)
+    if router is None:
+        logger.error(f"Cannot find router by name {args.router}")
+        exit(1)
+
+    lan_nw = next(iter(docker.network.list(filters={"name": args.lan})), None)
+    if lan_nw is None:
+        logger.error(f"Cannot find lan by name {args.lan}")
+        exit(1)
 
     wan_nw_id = next(
         v.network_id
@@ -246,6 +279,18 @@ def create_node(args):
     if args.key is None:
         args.key = "".join([uuid.uuid4().hex + uuid.uuid4().hex])
 
+    if args.stun is None:
+        logger.info(
+            "Stun server not provided, try finding locally by container name `coturn`"
+        )
+        coturn = next(iter(docker.container.list(filters={"name": "coturn"})), None)
+
+        if coturn is None:
+            logger.error("Stun server not found")
+            exit(0)
+        else:
+            args.stun = coturn.network_settings.networks["bridge"].ip_address
+
     if ":" not in args.stun:
         args.stun = f"{args.stun}:3478"
     if not args.stun.startswith("stun://"):
@@ -254,22 +299,39 @@ def create_node(args):
     cmd = ["bns-node", "run", "-b", "0.0.0.0:50000"]
     volumes = []
     if args.debug:
-        cmd = ["cargo", "run", "--", "run", "-b", "0.0.0.0:50000"]
-        # cannot use readonly mode, cargo will manipulate files
-        volumes = [(base_dir / "docker/bns-node", "/src/bns-node")]
         args.node_image = "bnsnet/node-builder"
         args.name = f"{args.name}-debug"
+        cmd = ["cargo", "run", "--", "run", "-b", "0.0.0.0:50000"]
 
-    node = docker.container.run(
-        args.node_image,
-        cmd,
-        name=args.name,
-        detach=True,
-        cap_add=["NET_ADMIN"],
-        networks=[lan_nw],
-        labels={"operator": "nind"},
-        envs={"ICE_SERVERS": args.stun, "ETH_KEY": args.key, "RUST_BACKTRACE": "1"},
-        volumes=volumes,
+        if args.code_mount_mode == "ro":
+            logger.error("Cannot use readonly mode, cargo will manipulate files")
+            exit(1)
+        elif args.code_mount_mode is None:
+            vlm = (args.code, "/src/bns-node")
+        else:
+            vlm = (args.code, "/src/bns-node", args.code_mount_mode)
+
+        volumes = [cast(VolumeDefinition, vlm)]
+
+    node = cast(
+        Container,
+        docker.container.run(
+            args.node_image,
+            cmd,
+            name=args.name,
+            detach=True,
+            cap_add=["NET_ADMIN"],
+            networks=[lan_nw],
+            labels={"operator": "nind"},
+            envs={
+                "ICE_SERVERS": args.stun,
+                "ETH_KEY": args.key,
+                "RUST_BACKTRACE": "1",
+                **dict(kv.split("=") for kv in args.env or []),
+            },
+            publish=[p.rsplit(":", 1) for p in args.publish or []],
+            volumes=volumes,
+        ),
     )
     node.reload()
     node_ip = node.network_settings.networks[lan_nw.name].ip_address
