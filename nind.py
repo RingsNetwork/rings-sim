@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 import os
 import pathlib
@@ -7,6 +8,7 @@ from typing import cast
 
 logger = logging.getLogger("nind")
 base_dir = pathlib.Path(__file__).parent
+output_format = "cmd"
 
 try:
     from python_on_whales import docker
@@ -37,6 +39,13 @@ def parse_args():
         "--verbose",
         action="store_true",
         help="Set logging level to DEBUG",
+    )
+    parser.add_argument(
+        "-f",
+        "--output-format",
+        default=output_format,
+        choices=["cmd", "json"],
+        help="Stdout format, use json while pipe to other process",
     )
 
     subparsers = parser.add_subparsers(dest="cmd", required=True)
@@ -247,7 +256,10 @@ def create_nat(args):
         ]
     )
 
-    print(f"-l {lan_nw.name} -r {router.name}")
+    if output_format == "cmd":
+        print(f"-l {lan_nw.name} -r {router.name}")
+    elif output_format == "json":
+        print(json.dumps({"lan": lan_nw.name, "router": router.name}))
 
 
 def create_node(args):
@@ -342,7 +354,27 @@ def create_node(args):
 
     node.execute(["ip", "route", "add", wan_subnet, "via", router_ip, "dev", "eth0"])
 
-    print(f"{lan_nw.name} {node.name}")
+    if output_format == "cmd":
+        print(f"{lan_nw.name} {node.name}")
+    elif output_format == "json":
+
+        pub_port = None
+        first_port_mappings = next(iter(node.network_settings.ports.values()), None)
+        if first_port_mappings:
+            pub_port = int(first_port_mappings[0]["HostPort"])
+
+        print(
+            json.dumps(
+                {
+                    "name": node.name,
+                    "router": router.name,
+                    "lan": lan_nw.name,
+                    "lan_ip": node_ip,
+                    "pub_port": pub_port,
+                    "key": args.key,
+                }
+            )
+        )
 
 
 def clean():
@@ -354,6 +386,9 @@ def clean():
 def main():
     args = parse_args()
     init_logger(logging.DEBUG if args.verbose else logging.INFO)
+
+    global output_format
+    output_format = args.output_format
 
     if args.cmd == "build_image":
         build_image(args)

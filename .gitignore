@@ -1,3 +1,2 @@
-./sim/target/*
-./sim/cargo.lock
+target/*
 .docker-sync/*
