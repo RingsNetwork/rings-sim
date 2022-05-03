@@ -92,6 +92,12 @@ def parse_args():
         default="bridge",
         help="Outer network",
     )
+    create_nat.add_argument(
+        "-s",
+        "--symmetric",
+        action="store_true",
+        help="Create a Symmetric NAT (default is Port Restricted Cone NAT)",
+    )
 
     create_node = subparsers.add_parser("create_node", help="Create a node")
     create_node.add_argument(
@@ -214,6 +220,7 @@ def create_nat(args):
         name=args.name,
         cap_add=["NET_ADMIN"],
         networks=[lan_nw],
+        sysctl={"net.ipv4.ip_forward": "1"},
         labels={"operator": "nind"},
     )
     docker.network.connect(wan_nw, router)
@@ -238,23 +245,69 @@ def create_nat(args):
     logger.info("Configuring iptables...")
 
     lan_subnet = lan_nw.ipam.config[0]["Subnet"]
-    router.execute(
-        [
-            "iptables-legacy",
-            "-t",
-            "nat",
-            "-A",
-            "POSTROUTING",
-            "-s",
-            lan_subnet,
-            "-o",
-            wan_ifname,
-            "-j",
-            "SNAT",
-            "--to-source",
-            wan_ip,
+    if args.symmetric:
+        cmds = [
+            [
+                "iptables-legacy",
+                "-t",
+                "nat",
+                "-A",
+                "POSTROUTING",
+                "-s",
+                lan_subnet,
+                "-o",
+                wan_ifname,
+                "-j",
+                "MASQUERADE",
+                "--random",
+            ],
+            [
+                "iptables-legacy",
+                "-A",
+                "FORWARD",
+                "-i",
+                wan_ifname,
+                "-o",
+                lan_ifname,
+                "-m",
+                "state",
+                "--state",
+                "RELATED,ESTABLISHED",
+                "-j",
+                "ACCEPT",
+            ],
+            [
+                "iptables-legacy",
+                "-A",
+                "FORWARD",
+                "-i",
+                lan_ifname,
+                "-o",
+                wan_ifname,
+                "-j",
+                "ACCEPT",
+            ],
         ]
-    )
+        for cmd in cmds:
+            router.execute(cmd)
+    else:
+        router.execute(
+            [
+                "iptables-legacy",
+                "-t",
+                "nat",
+                "-A",
+                "POSTROUTING",
+                "-s",
+                lan_subnet,
+                "-o",
+                wan_ifname,
+                "-j",
+                "SNAT",
+                "--to-source",
+                wan_ip,
+            ]
+        )
 
     if output_format == "cmd":
         print(f"-l {lan_nw.name} -r {router.name}")

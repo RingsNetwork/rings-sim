@@ -26,11 +26,15 @@ impl Node {
     }
 }
 
-pub fn create_nat() -> Result<Nat> {
-    let co = Command::new("python")
-        .args(["nind.py", "-f", "json", "create_nat"])
-        .stderr(Stdio::inherit())
-        .output()?;
+pub fn create_nat(symmetric: bool) -> Result<Nat> {
+    let mut c = Command::new("python");
+    c.args(["nind.py", "-f", "json", "create_nat"]);
+
+    if symmetric {
+        c.args(["--symmetric"]);
+    }
+
+    let co = c.stderr(Stdio::inherit()).output()?;
 
     serde_json::from_str(std::str::from_utf8(&co.stdout)?).map_err(|e| anyhow!(e))
 }

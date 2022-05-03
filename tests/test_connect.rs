@@ -1,15 +1,10 @@
 #[cfg(test)]
 pub mod test {
-    use anyhow::Result;
+    use anyhow::{Ok, Result};
     use bns_node::cli::Client;
     use ring_sim::*;
 
-    #[tokio::test]
-    async fn test_connect_peer_via_http_in_same_nat() -> Result<()> {
-        let nat = create_nat()?;
-        let node1 = create_node(&nat, Some("50000"))?;
-        let node2 = create_node(&nat, Some("50000"))?;
-
+    async fn test_connect_peer_via_http(node1: &Node, node2: &Node) -> Result<()> {
         let ep1 = format!("http://127.0.0.1:{}", node1.pub_port.unwrap());
         let ep2 = format!("http://127.0.0.1:{}", node2.pub_port.unwrap());
         let node2_lan_url = format!("http://{}:50000", node2.lan_ip);
@@ -37,12 +32,7 @@ pub mod test {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn test_connect_peer_via_sdp_in_same_nat() -> Result<()> {
-        let nat = create_nat()?;
-        let node1 = create_node(&nat, Some("50000"))?;
-        let node2 = create_node(&nat, Some("50000"))?;
-
+    async fn test_connect_peer_via_sdp(node1: &Node, node2: &Node) -> Result<()> {
         let ep1 = format!("http://127.0.0.1:{}", node1.pub_port.unwrap());
         let ep2 = format!("http://127.0.0.1:{}", node2.pub_port.unwrap());
 
@@ -72,6 +62,52 @@ pub mod test {
         assert_eq!(node2_peers.len(), 1);
         assert_eq!(node2_peers[0].transport_id, trans_and_ice2.transport_id);
         assert_eq!(node2_peers[0].address, node1.address()?);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_connect_peer_via_http_in_same_nat() -> Result<()> {
+        let nat = create_nat(false)?;
+        let node1 = create_node(&nat, Some("50000"))?;
+        let node2 = create_node(&nat, Some("50000"))?;
+
+        test_connect_peer_via_http(&node1, &node2).await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_connect_peer_via_sdp_in_same_nat() -> Result<()> {
+        let nat = create_nat(false)?;
+        let node1 = create_node(&nat, Some("50000"))?;
+        let node2 = create_node(&nat, Some("50000"))?;
+
+        test_connect_peer_via_sdp(&node1, &node2).await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_connect_peer_via_sdp_in_different_nat() -> Result<()> {
+        let nat1 = create_nat(false)?;
+        let nat2 = create_nat(false)?;
+        let node1 = create_node(&nat1, Some("50000"))?;
+        let node2 = create_node(&nat2, Some("50000"))?;
+
+        test_connect_peer_via_sdp(&node1, &node2).await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_connect_peer_via_sdp_in_different_symmetric_nat() -> Result<()> {
+        let nat1 = create_nat(true)?;
+        let nat2 = create_nat(true)?;
+        let node1 = create_node(&nat1, Some("50000"))?;
+        let node2 = create_node(&nat2, Some("50000"))?;
+
+        test_connect_peer_via_sdp(&node1, &node2).await?;
 
         Ok(())
     }
