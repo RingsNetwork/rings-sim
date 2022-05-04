@@ -8,7 +8,11 @@ from typing import cast
 
 logger = logging.getLogger("nind")
 base_dir = pathlib.Path(__file__).parent
-output_format = "cmd"
+output_format = "cmdline"
+
+ROUTER_IMAGE = "bnsnet/router"
+NODE_IMAGE = "bnsnet/node"
+BUILDER_IMAGE = "bnsnet/node-builder"
 
 try:
     from python_on_whales import docker
@@ -36,19 +40,20 @@ def parse_args():
     )
     parser.add_argument(
         "-v",
-        "--verbose",
-        action="store_true",
-        help="Set logging level to DEBUG",
+        dest="verbose",
+        action="count",
+        default=0,
+        help="Set logging level, default is WARNING, -v is INFO, -vv is DEBUG",
     )
     parser.add_argument(
         "-f",
         "--output-format",
         default=output_format,
-        choices=["cmd", "json"],
+        choices=["cmdline", "json"],
         help="Stdout format, use json while pipe to other process",
     )
 
-    subparsers = parser.add_subparsers(dest="cmd", required=True)
+    subparsers = parser.add_subparsers(dest="subcmd", required=True)
 
     build_image = subparsers.add_parser(
         "build_image", help="Build images for node and router"
@@ -70,7 +75,7 @@ def parse_args():
     create_nat.add_argument(
         "--router-image",
         type=str,
-        default="bnsnet/router",
+        default=ROUTER_IMAGE,
         help="Image for router container",
     )
     create_nat.add_argument(
@@ -117,7 +122,7 @@ def parse_args():
     create_node.add_argument(
         "--node-image",
         type=str,
-        default="bnsnet/node",
+        default=NODE_IMAGE,
         help="Image for node container",
     )
     create_node.add_argument(
@@ -167,6 +172,7 @@ def parse_args():
         "--code-mount-mode",
         help="Specify code mount mode for debug mode like docker `-v` argument in the Docker CLI",
     )
+    create_node.add_argument("cmd", nargs="*")
 
     subparsers.add_parser("clean", help="Clean up all containers and networks")
 
@@ -189,16 +195,16 @@ def build_image(args):
         p = args.path
         logger.info(f"Building image, path: {p}")
         # Do not use buildx to prevent sending huge tarball. Known issue: https://github.com/docker/buildx/issues/107
-        os.system(f"docker build -t bnsnet/node-builder --target builder {p}")
+        os.system(f"docker build -t {BUILDER_IMAGE} --target builder {p}")
         return
 
     p = args.path / "bns-router"
     logger.info(f"Building image, path: {p}")
-    docker.build(context_path=p, tags=["bnsnet/router"], load=True)
+    docker.build(context_path=p, tags=[ROUTER_IMAGE], load=True)
 
     p = args.path
     logger.info(f"Building image, path: {p}")
-    docker.build(context_path=p, tags=["bnsnet/node"], load=True)
+    docker.build(context_path=p, tags=[NODE_IMAGE], load=True)
 
 
 def create_nat(args):
@@ -309,13 +315,18 @@ def create_nat(args):
             ]
         )
 
-    if output_format == "cmd":
+    if output_format == "cmdline":
         print(f"-l {lan_nw.name} -r {router.name}")
     elif output_format == "json":
         print(json.dumps({"lan": lan_nw.name, "router": router.name}))
 
 
 def create_node(args):
+
+    ###################################
+    # Query and check network configs #
+    ###################################
+
     router = next(iter(docker.container.list(filters={"name": args.router})), None)
     if router is None:
         logger.error(f"Cannot find router by name {args.router}")
@@ -337,6 +348,10 @@ def create_node(args):
     router_ip = next(
         v.ipv4_address for k, v in lan_nw.containers.items() if k == router.id
     ).split("/")[0]
+
+    #######################
+    # Create node by args #
+    #######################
 
     if args.name is None:
         args.name = f"bns-node-{nonce()}"
@@ -361,12 +376,12 @@ def create_node(args):
     if not args.stun.startswith("stun://"):
         args.stun = f"stun://{args.stun}"
 
-    cmd = ["bns-node", "run", "-b", "0.0.0.0:50000"]
     volumes = []
+
     if args.debug:
-        args.node_image = "bnsnet/node-builder"
+        args.node_image = BUILDER_IMAGE
         args.name = f"{args.name}-debug"
-        cmd = ["cargo", "run", "--", "run", "-b", "0.0.0.0:50000"]
+        args.cmd = args.cmd or ["cargo", "run", "--", "run", "-b", "0.0.0.0:50000"]
 
         if args.code_mount_mode == "ro":
             logger.error("Cannot use readonly mode, cargo will manipulate files")
@@ -375,14 +390,18 @@ def create_node(args):
             vlm = (args.code, "/src/bns-node")
         else:
             vlm = (args.code, "/src/bns-node", args.code_mount_mode)
-
         volumes = [cast(VolumeDefinition, vlm)]
+
+    elif args.node_image == NODE_IMAGE:
+        args.cmd = args.cmd or ["bns-node", "run", "-b", "0.0.0.0:50000"]
+
+    logger.debug(f"Args: {args}")
 
     node = cast(
         Container,
         docker.container.run(
             args.node_image,
-            cmd,
+            args.cmd,
             name=args.name,
             detach=True,
             cap_add=["NET_ADMIN"],
@@ -405,9 +424,21 @@ def create_node(args):
     logger.info(f"(lan {lan_nw.name}) IP Address {node_ip}")
     logger.info("Add route...")
 
-    node.execute(["ip", "route", "add", wan_subnet, "via", router_ip, "dev", "eth0"])
+    #############
+    # Add route #
+    #############
 
-    if output_format == "cmd":
+    cmd = ["ip", "route", "add", wan_subnet, "via", router_ip, "dev", "eth0"]
+    try:
+        node.execute(cmd)
+    except Exception:
+        logger.warning(f"Add route failed. To fix it, manually run: {' '.join(cmd)}")
+
+    ##########
+    # Output #
+    ##########
+
+    if output_format == "cmdline":
         print(f"{lan_nw.name} {node.name}")
     elif output_format == "json":
 
@@ -438,18 +469,18 @@ def clean():
 
 def main():
     args = parse_args()
-    init_logger(logging.DEBUG if args.verbose else logging.INFO)
+    init_logger(max(10, 10 * (3 - args.verbose)))
 
     global output_format
     output_format = args.output_format
 
-    if args.cmd == "build_image":
+    if args.subcmd == "build_image":
         build_image(args)
-    elif args.cmd == "create_nat":
+    elif args.subcmd == "create_nat":
         create_nat(args)
-    elif args.cmd == "create_node":
+    elif args.subcmd == "create_node":
         create_node(args)
-    elif args.cmd == "clean":
+    elif args.subcmd == "clean":
         clean()
 
 
