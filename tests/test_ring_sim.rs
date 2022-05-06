@@ -42,11 +42,6 @@ fn test_port_restricted_cone_nat() -> Result<()> {
     let mapping_behavior = get_behavior(&node, &["-m", "172.31.0.200"])?;
     let filter_behavior = get_behavior(&node, &["-f", "172.31.0.200"])?;
 
-    println!(
-        "{:?}",
-        mapping_behavior.rsplitn(4, '\n').collect::<Vec<&str>>()
-    );
-
     assert_eq!(
         "NAT with Endpoint Independent Mapping!",
         mapping_behavior.rsplitn(4, '\n').nth(2).unwrap()
