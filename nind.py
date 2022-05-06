@@ -1,4 +1,5 @@
 import argparse
+import ipaddress
 import json
 import logging
 import os
@@ -13,6 +14,12 @@ output_format = "cmdline"
 ROUTER_IMAGE = "bnsnet/router"
 NODE_IMAGE = "bnsnet/node"
 BUILDER_IMAGE = "bnsnet/node-builder"
+COTURN_IMAGE = "bnsnet/coturn"
+LABELS = {"operator": "nind"}
+GLOBAL_LABELS = {"operator": "nind-global"}
+COTURN_CONTAINER_NAME = "coturn"
+GLOBAL_NETWORK_NAME = "bns-nw-global"
+GLOBAL_NETWORK_SUBNET = "172.31.0.0/16"
 
 try:
     from python_on_whales import docker
@@ -71,18 +78,29 @@ def parse_args():
         help="Export builder image for debug mode (it's super huge)",
     )
 
+    create_coturn = subparsers.add_parser(
+        "create_coturn", help="Create a properly configured coturn server"
+    )
+    create_coturn.add_argument(
+        "-w",
+        "--wan",
+        type=str,
+        default=GLOBAL_NETWORK_NAME,
+        help="Outer network",
+    )
+    create_coturn.add_argument(
+        "--coturn-image",
+        type=str,
+        default=COTURN_IMAGE,
+        help="Image for coturn container",
+    )
+
     create_nat = subparsers.add_parser("create_nat", help="Create a NAT")
     create_nat.add_argument(
         "--router-image",
         type=str,
         default=ROUTER_IMAGE,
         help="Image for router container",
-    )
-    create_nat.add_argument(
-        "-n",
-        "--name",
-        type=str,
-        help="Name for router container",
     )
     create_nat.add_argument(
         "-l",
@@ -94,7 +112,7 @@ def parse_args():
         "-w",
         "--wan",
         type=str,
-        default="bridge",
+        default=GLOBAL_NETWORK_NAME,
         help="Outer network",
     )
     create_nat.add_argument(
@@ -124,12 +142,6 @@ def parse_args():
         type=str,
         default=NODE_IMAGE,
         help="Image for node container",
-    )
-    create_node.add_argument(
-        "-n",
-        "--name",
-        type=str,
-        help="Name for node container",
     )
     create_node.add_argument(
         "-s",
@@ -174,7 +186,13 @@ def parse_args():
     )
     create_node.add_argument("cmd", nargs="*")
 
-    subparsers.add_parser("clean", help="Clean up all containers and networks")
+    clean = subparsers.add_parser("clean", help="Clean up all containers and networks")
+    clean.add_argument(
+        "-a",
+        "--all",
+        action="store_true",
+        help="Also remove global running stun server coturn",
+    )
 
     return parser.parse_args()
 
@@ -189,6 +207,64 @@ def get_mac_ifname(container, mac):
     return output.split("@")[0]
 
 
+def get_container_or_exit(*, name=None, id_=None):
+    filters = {}
+    if name is not None:
+        filters.update(name=name)
+    if id_ is not None:
+        filters.update(id=id_)
+
+    c = next(iter(docker.container.list(filters=filters)), None)
+
+    if c is None:
+        logger.error(f"Cannot find container by {filters}")
+        exit(1)
+
+    return c
+
+
+def get_network_or_exit(*, name=None, id_=None):
+    filters = {}
+    if name is not None:
+        filters.update(name=name)
+    if id_ is not None:
+        filters.update(id=id_)
+
+    nw = next(iter(docker.network.list(filters=filters)), None)
+
+    if nw is None:
+
+        if name == GLOBAL_NETWORK_NAME:
+            nw = docker.network.create(
+                GLOBAL_NETWORK_NAME, subnet=GLOBAL_NETWORK_SUBNET, labels=GLOBAL_LABELS
+            )
+            nw.reload()
+
+        else:
+            logger.error(f"Cannot find network by {filters}")
+            exit(1)
+
+    return nw
+
+
+def get_available_coturn_ips_or_exit(nw):
+    subnet = ipaddress.ip_network(nw.ipam.config[0]["Subnet"])
+
+    ip1 = ipaddress.ip_interface(f"{subnet[200]}/{subnet.netmask}")
+    ip2 = ipaddress.ip_interface(f"{subnet[201]}/{subnet.netmask}")
+
+    for c in nw.containers.values():
+        c_ip = ipaddress.ip_interface(c.ipv4_address)
+
+        if any(c_ip == ip for ip in (ip1, ip2)):
+            logger.error(
+                f"Cannot create coturn, static address {c.ipv4_address} has been taken"
+            )
+            exit(1)
+
+    return ip1, ip2
+
+
 def build_image(args):
 
     if args.builder:
@@ -197,6 +273,10 @@ def build_image(args):
         # Do not use buildx to prevent sending huge tarball. Known issue: https://github.com/docker/buildx/issues/107
         os.system(f"docker build -t {BUILDER_IMAGE} --target builder {p}")
         return
+
+    p = args.path / "bns-coturn"
+    logger.info(f"Building image, path: {p}")
+    docker.build(context_path=p, tags=[COTURN_IMAGE], load=True)
 
     p = args.path / "bns-router"
     logger.info(f"Building image, path: {p}")
@@ -207,27 +287,51 @@ def build_image(args):
     docker.build(context_path=p, tags=[NODE_IMAGE], load=True)
 
 
+def create_coturn(args):
+    wan_nw = get_network_or_exit(name=args.wan)
+
+    ip1, ip2 = get_available_coturn_ips_or_exit(wan_nw)
+
+    coturn = cast(
+        Container,
+        docker.container.run(
+            args.coturn_image,
+            [
+                "--log-file=stdout",
+                f"--listening-ip={ip1.ip}",
+                f"--listening-ip={ip2.ip}",
+            ],
+            name=COTURN_CONTAINER_NAME,
+            ip=str(ip1.ip),
+            detach=True,
+            cap_add=["NET_ADMIN"],
+            networks=[wan_nw],
+            labels=GLOBAL_LABELS,
+        ),
+    )
+
+    cmd = ["ip", "addr", "add", str(ip2), "dev", "eth0"]
+    try:
+        coturn.execute(cmd, user="root")
+    except Exception:
+        logger.warning(f"Add route failed. To fix it, manually run: {' '.join(cmd)}")
+
+
 def create_nat(args):
-    wan_nw = docker.network.list(filters={"name": args.wan})[0]
+    wan_nw = get_network_or_exit(name=args.wan)
 
     if args.lan is None:
-        lan_nw = docker.network.create(
-            f"bns-nw-{nonce()}",
-            labels={"operator": "nind"},
-        )
+        lan_nw = docker.network.create(f"bns-nw-{nonce()}", labels=LABELS)
     else:
-        lan_nw = docker.network.list(filters={"name": args.lan})[0]
-
-    if args.name is None:
-        args.name = f"bns-router-{nonce()}"
+        lan_nw = get_network_or_exit(name=args.lan)
 
     router = docker.container.create(
         args.router_image,
-        name=args.name,
+        name=f"bns-router-{nonce()}",
         cap_add=["NET_ADMIN"],
         networks=[lan_nw],
         sysctl={"net.ipv4.ip_forward": "1"},
-        labels={"operator": "nind"},
+        labels=LABELS,
     )
     docker.network.connect(wan_nw, router)
     router.start()
@@ -327,22 +431,15 @@ def create_node(args):
     # Query and check network configs #
     ###################################
 
-    router = next(iter(docker.container.list(filters={"name": args.router})), None)
-    if router is None:
-        logger.error(f"Cannot find router by name {args.router}")
-        exit(1)
-
-    lan_nw = next(iter(docker.network.list(filters={"name": args.lan})), None)
-    if lan_nw is None:
-        logger.error(f"Cannot find lan by name {args.lan}")
-        exit(1)
+    router = get_container_or_exit(name=args.router)
+    lan_nw = get_network_or_exit(name=args.lan)
 
     wan_nw_id = next(
         v.network_id
         for v in router.network_settings.networks.values()
         if v.network_id != lan_nw.id
     )
-    wan_nw = docker.network.list(filters={"id": wan_nw_id})[0]
+    wan_nw = get_network_or_exit(id_=wan_nw_id)
     wan_subnet = wan_nw.ipam.config[0]["Subnet"]
 
     router_ip = next(
@@ -353,23 +450,15 @@ def create_node(args):
     # Create node by args #
     #######################
 
-    if args.name is None:
-        args.name = f"bns-node-{nonce()}"
-
     if args.key is None:
         args.key = "".join([uuid.uuid4().hex + uuid.uuid4().hex])
 
     if args.stun is None:
         logger.info(
-            "Stun server not provided, try finding locally by container name `coturn`"
+            f"Stun server not provided, try finding locally by container name `{COTURN_CONTAINER_NAME}`"
         )
-        coturn = next(iter(docker.container.list(filters={"name": "coturn"})), None)
-
-        if coturn is None:
-            logger.error("Stun server not found")
-            exit(0)
-        else:
-            args.stun = coturn.network_settings.networks["bridge"].ip_address
+        coturn = get_container_or_exit(name=COTURN_CONTAINER_NAME)
+        args.stun = next(iter(coturn.network_settings.networks.values())).ip_address
 
     if ":" not in args.stun:
         args.stun = f"{args.stun}:3478"
@@ -402,11 +491,11 @@ def create_node(args):
         docker.container.run(
             args.node_image,
             args.cmd,
-            name=args.name,
+            name=f"bns-node-{nonce()}",
             detach=True,
             cap_add=["NET_ADMIN"],
             networks=[lan_nw],
-            labels={"operator": "nind"},
+            labels=LABELS,
             envs={
                 "ICE_SERVERS": args.stun,
                 "ETH_KEY": args.key,
@@ -430,7 +519,7 @@ def create_node(args):
 
     cmd = ["ip", "route", "add", wan_subnet, "via", router_ip, "dev", "eth0"]
     try:
-        node.execute(cmd)
+        node.execute(cmd, user="root")
     except Exception:
         logger.warning(f"Add route failed. To fix it, manually run: {' '.join(cmd)}")
 
@@ -461,10 +550,17 @@ def create_node(args):
         )
 
 
-def clean():
+def clean(args):
     for c in docker.container.list(all=True, filters={"label": "operator=nind"}):
         c.remove(force=True)
     docker.network.prune(filters={"label": "operator=nind"})
+
+    if args.all:
+        for c in docker.container.list(
+            all=True, filters={"label": "operator=nind-global"}
+        ):
+            c.remove(force=True)
+        docker.network.prune(filters={"label": "operator=nind-global"})
 
 
 def main():
@@ -476,12 +572,14 @@ def main():
 
     if args.subcmd == "build_image":
         build_image(args)
+    elif args.subcmd == "create_coturn":
+        create_coturn(args)
     elif args.subcmd == "create_nat":
         create_nat(args)
     elif args.subcmd == "create_node":
         create_node(args)
     elif args.subcmd == "clean":
-        clean()
+        clean(args)
 
 
 if __name__ == "__main__":

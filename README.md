@@ -14,10 +14,7 @@ Simulate ring behind NAT in docker to test [bns-node](https://github.com/BNSnet/
 
 ### Prepare stun sever in docker
 ```shell
-❯ docker run -d --rm --name coturn coturn/coturn
-
-# Get <stun ip>
-docker container inspect -f '{{ .NetworkSettings.Networks.bridge.IPAddress }}' coturn
+❯ python nind.py create_coturn
 ```
 
 ### Run two nodes behind same NAT
@@ -27,5 +24,5 @@ python nind.py create_nat
 # It will give you <nat id> and <router id> at the end.
 
 # Do it twice
-python nind.py create_node -s <stun ip shown above> -l <nat id> -r <router id>
+python nind.py create_node -l <nat id> -r <router id>
 ```
