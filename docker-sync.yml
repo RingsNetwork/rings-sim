@@ -1,7 +1,7 @@
 version: "2"
 syncs:
-  bns-node-native-code-sync:
-    src: './docker/bns-node'
+  rings-node-native-code-sync:
+    src: './docker/rings-node'
     sync_strategy: native_osx
     sync_excludes:
       - .git

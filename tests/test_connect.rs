@@ -1,5 +1,5 @@
 use anyhow::Result;
-use bns_node::cli::Client;
+use rings_node::cli::Client;
 use ring_sim::*;
 
 async fn test_connect_peer_via_http(node1: &Node, node2: &Node) -> Result<()> {

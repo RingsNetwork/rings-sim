@@ -11,15 +11,17 @@ logger = logging.getLogger("nind")
 base_dir = pathlib.Path(__file__).parent
 output_format = "cmdline"
 
-ROUTER_IMAGE = "bnsnet/router"
-NODE_IMAGE = "bnsnet/node"
-BUILDER_IMAGE = "bnsnet/node-builder"
-COTURN_IMAGE = "bnsnet/coturn"
+ROUTER_IMAGE = "ringsnetwork/router"
+NODE_IMAGE = "ringsnetwork/node"
+BUILDER_IMAGE = "ringsnetwork/node-builder"
+COTURN_IMAGE = "ringsnetwork/coturn"
 LABELS = {"operator": "nind"}
 GLOBAL_LABELS = {"operator": "nind-global"}
 COTURN_CONTAINER_NAME = "coturn"
-GLOBAL_NETWORK_NAME = "bns-nw-global"
+GLOBAL_NETWORK_NAME = "rings-nw-global"
 GLOBAL_NETWORK_SUBNET = "172.31.0.0/16"
+
+BUILD_PROXY = os.getenv("DOCKER_BUILD_PROXY", os.getenv("docker_build_proxy"))
 
 try:
     from python_on_whales import docker
@@ -176,7 +178,7 @@ def parse_args():
     create_node.add_argument(
         "-c",
         "--code",
-        default=base_dir / "docker/bns-node",
+        default=base_dir / "docker/rings-node",
         help="Specify code directory or volume to mount for debug mode",
     )
     create_node.add_argument(
@@ -266,25 +268,40 @@ def get_available_coturn_ips_or_exit(nw):
 
 
 def build_image(args):
+    if BUILD_PROXY:
+        build_args = {"http_proxy": BUILD_PROXY, "https_proxy": BUILD_PROXY}
+        build_args_str = (
+            f"--build-arg http_proxy={BUILD_PROXY} --build-arg http_proxy={BUILD_PROXY}"
+        )
+    else:
+        build_args = {}
+        build_args_str = ""
 
     if args.builder:
         p = args.path
         logger.info(f"Building image, path: {p}")
         # Do not use buildx to prevent sending huge tarball. Known issue: https://github.com/docker/buildx/issues/107
-        os.system(f"docker build -t {BUILDER_IMAGE} --target builder {p}")
+        os.system(
+            f"docker build -t {BUILDER_IMAGE} {build_args_str} --target builder {p}"
+        )
         return
 
-    p = args.path / "bns-coturn"
-    logger.info(f"Building image, path: {p}")
-    docker.build(context_path=p, tags=[COTURN_IMAGE], load=True)
+    if BUILD_PROXY:
+        build_args = {"http_proxy": BUILD_PROXY, "https_proxy": BUILD_PROXY}
+    else:
+        build_args = {}
 
-    p = args.path / "bns-router"
+    p = args.path / "coturn"
     logger.info(f"Building image, path: {p}")
-    docker.build(context_path=p, tags=[ROUTER_IMAGE], load=True)
+    docker.build(context_path=p, tags=[COTURN_IMAGE], load=True, build_args=build_args)
+
+    p = args.path / "router"
+    logger.info(f"Building image, path: {p}")
+    docker.build(context_path=p, tags=[ROUTER_IMAGE], load=True, build_args=build_args)
 
     p = args.path
     logger.info(f"Building image, path: {p}")
-    docker.build(context_path=p, tags=[NODE_IMAGE], load=True)
+    docker.build(context_path=p, tags=[NODE_IMAGE], load=True, build_args=build_args)
 
 
 def create_coturn(args):
@@ -321,13 +338,13 @@ def create_nat(args):
     wan_nw = get_network_or_exit(name=args.wan)
 
     if args.lan is None:
-        lan_nw = docker.network.create(f"bns-nw-{nonce()}", labels=LABELS)
+        lan_nw = docker.network.create(f"rings-nw-{nonce()}", labels=LABELS)
     else:
         lan_nw = get_network_or_exit(name=args.lan)
 
     router = docker.container.create(
         args.router_image,
-        name=f"bns-router-{nonce()}",
+        name=f"rings-router-{nonce()}",
         cap_add=["NET_ADMIN"],
         networks=[lan_nw],
         sysctl={"net.ipv4.ip_forward": "1"},
@@ -476,13 +493,13 @@ def create_node(args):
             logger.error("Cannot use readonly mode, cargo will manipulate files")
             exit(1)
         elif args.code_mount_mode is None:
-            vlm = (args.code, "/src/bns-node")
+            vlm = (args.code, "/src/rings-node")
         else:
-            vlm = (args.code, "/src/bns-node", args.code_mount_mode)
+            vlm = (args.code, "/src/rings-node", args.code_mount_mode)
         volumes = [cast(VolumeDefinition, vlm)]
 
     elif args.node_image == NODE_IMAGE:
-        args.cmd = args.cmd or ["bns-node", "run", "-b", "0.0.0.0:50000"]
+        args.cmd = args.cmd or ["rings-node", "run", "-b", "0.0.0.0:50000"]
 
     logger.debug(f"Args: {args}")
 
@@ -491,7 +508,7 @@ def create_node(args):
         docker.container.run(
             args.node_image,
             args.cmd,
-            name=f"bns-node-{nonce()}",
+            name=f"rings-node-{nonce()}",
             detach=True,
             cap_add=["NET_ADMIN"],
             networks=[lan_nw],

@@ -14,7 +14,7 @@ pub fn create_coturn_node(nat: &Nat) -> Result<Node> {
             "-r",
             &nat.router,
             "--node-image",
-            "bnsnet/coturn",
+            "ringsnetwork/coturn",
             "sleep",
             "infinity",
         ])

@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use bns_core::ecc::SecretKey;
+use rings_core::ecc::SecretKey;
 use serde::{Deserialize, Serialize};
 use std::process::{Command, Stdio};
 

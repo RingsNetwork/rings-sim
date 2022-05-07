@@ -1,3 +1,3 @@
 [submodule "docker/bns-node"]
-	path = docker/bns-node
-	url = git@github.com:BNSnet/bns-node.git
+	path = docker/rings-node
+	url = git@github.com:RingsNetwork/rings-node.git

@@ -1,5 +1,5 @@
 # Ring Simulation
-Simulate ring behind NAT in docker to test [bns-node](https://github.com/BNSnet/bns-node).
+Simulate ring behind NAT in docker to test [rings-node](https://github.com/RingsNetwork/rings-node).
 
 ## Prepare
 
@@ -11,7 +11,7 @@ Build test images
 ❯ python nind.py build_image
 
 # Show the built images
-❯ docker images | grep bnsnet
+❯ docker images | grep ringsnetwork
 ```
 
 Prepare stun sever in docker
